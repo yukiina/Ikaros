@@ -31,8 +31,10 @@ private:
   httplib::Server _srv;
   static vector<File> _files;
   int _port;
+  static std::mutex _mutex;
 };
 
+std::mutex P2PServer::_mutex;
 vector<P2PServer::File> P2PServer::_files;
 
 
@@ -62,14 +64,17 @@ void P2PServer::GetFileList(const Request& req, Response& rsp){
 }
 
 void P2PServer::GetDownLoad(const Request& req, Response& rsp){
-  //std::cout << "Get DownLoad success" << std::endl;
+  std::cout << "Get DownLoad success" << std::endl;
   string filePath = SHAR_DIR;
   filePath += "/";
   filePath += req.matches[1];
 
+
   path pathStr(filePath);
   if (!exists(pathStr)){      // 共享文件夹没有这个文件
     rsp.status = 404;
+    std::cout << filePath << endl;
+    std::cout << "no such file or directory" << std::endl;
     rsp.set_content("no such file or directory", "text/plain");
     return;
   }
@@ -80,22 +85,27 @@ void P2PServer::GetDownLoad(const Request& req, Response& rsp){
   if (req.method == "HEAD") {
     stringstream header;
     header << fileSize;
+    rsp.status = 200;
     rsp.set_header("Content-Length", header.str().c_str());
   }else if(req.method == "GET") {
     if (!req.has_header("Range"))
     {   
       rsp.status = 400;
       rsp.set_content("no range", "text/plain");
+      cout << "no range" << endl;
       return;
     }
     int64_t rangeStart, rangeEnd, rangeSize;
     string range = req.get_header_value("Range", 0);
     if (CalcRange(range, rangeStart, rangeEnd) == false) { // 计算出 Range: byte=x-x 分块下载的大小
+      cout << "Calc range error" << endl;
       return ;
     }
     
     if (rangeStart < 0 || rangeEnd > fileSize || rangeEnd <= rangeStart) { // 不合理的大小
       rsp.status = 400;
+      cout << "range error" << endl;
+      cout << rangeStart << " " << rangeEnd << " " << fileSize << endl;
       return ;
     }
 
@@ -104,13 +114,17 @@ void P2PServer::GetDownLoad(const Request& req, Response& rsp){
     cout << "下载" << fileName << ": " << rangeStart << "~" << rangeEnd << endl;
     cout << "大小: " << rangeSize << endl;
 
-    ifstream ifs(filePath, std::ios_base::binary);
+
+    std::unique_lock<std::mutex> ulc(_mutex);
+
+    ifstream ifs(filePath, std::ios::binary);
     if (!ifs.is_open()) {
       rsp.status = 400;
       rsp.set_content("file is not open", "text/plain");
       return;
     }
-
+    
+    
     ifs.seekg(rangeStart);
     rsp.body.resize(rangeSize);
     ifs.read(&rsp.body[0], rangeSize);
@@ -127,6 +141,8 @@ bool P2PServer::CalcRange(const string &range, int64_t& range_start, int64_t& ra
   start = range.find("=");
   end = range.find("-");
 
+  
+
   if (start == string::npos && end == string::npos){
     return false;
   }
@@ -135,9 +151,11 @@ bool P2PServer::CalcRange(const string &range, int64_t& range_start, int64_t& ra
   ss << range.substr(start + 1, end - start + 1);
   ss >> range_start;
 
-  ss.clear();
-  ss << range.substr(end + 1);
-  ss >> range_end;
+  stringstream ss2;
+  ss2 << range.substr(end + 1, string::npos);
+  ss2 >> range_end;
+
+  cout << "range_end: " << range_end << endl;
   return true;
 }
 void P2PServer::GetFileVector(){
